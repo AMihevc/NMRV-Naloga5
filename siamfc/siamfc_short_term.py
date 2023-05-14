@@ -21,7 +21,9 @@ from .losses import BalancedLoss
 from .datasets import Pair
 from .transforms import SiamFCTransforms
 
+
 __all__ = ['TrackerSiamFC']
+
 
 class Net(nn.Module):
 
@@ -73,20 +75,6 @@ class TrackerSiamFC(Tracker):
             self.cfg.ultimate_lr / self.cfg.initial_lr,
             1.0 / self.cfg.epoch_num)
         self.lr_scheduler = ExponentialLR(self.optimizer, gamma)
-
-        # ---------------------- define parameters ----------------------
-        self.not_detected_threshold = 0.8   # threshold for when the subject is considerd not detected
-        self.last_known_position = [0,0]    # last known position of the subject
-        self.redetect_iterations = 0        # number of iterations since the subject was last detected
-        self.gaussian_std = 20              # standard deviation for the gaussian distribution
-        self.redetect_samples = 10          # number of iterations before the subject is considered lost ????
-        self.alpha_avg_max_resp = 0.05      # weight for the avg response calculation
-        # self.iterations = 0               # number of iterations since the start of the tracking
-        self.redetect = False               # flag for redetection
-        self.max_response_avg = 0           # maximum response average
-        self.sample_method = "gaussian"     # method for sampling patches can be "random" or "gaussian"
-        
-        # ---------------------- end of parameters ----------------------
 
     def parse_args(self, **kwargs):
         # default parameters
@@ -164,91 +152,6 @@ class TrackerSiamFC(Tracker):
         self.kernel = self.net.backbone(z)
     
     @torch.no_grad()
-    def redetect_target(self, img, loc):
-            # start by generating new sample positions
-            if self.sample_method == "random":
-                # sample random positions
-                x = np.random.uniform(low = 0, high=img.shape[0], size=(self.redetect_samples))
-                y = np.random.uniform(low = 0, high=img.shape[1], size=(self.redetect_samples))
-                # print("[DEBUG] Using random sampling method in function redetect_target()")
-            elif self.sample_method == "gaussian":
-                # use a Gaussian distribution around the last known location to sample positions
-                # loc = previous location of the image patch
-                # scale = standard deviation of the distribution (how far we should seach from the previous location) increase with each iteration
-                # size = number of samples to draw
-                x = np.random.normal(loc=self.last_known_position[0], scale= self.gaussian_std + self.redetect_iterations, size=self.redetect_samples)
-                y = np.random.normal(loc=self.last_known_position[1], scale= self.gaussian_std + self.redetect_iterations, size=self.redetect_samples)
-                # print("[DEBUG] Using Gaussian sampling method in function redetect_target()")
-            else:
-                #if no method is specified, use random
-                x = np.random.uniform(low = 0, high=img.shape[0], size=(self.redetect_samples))
-                y = np.random.uniform(low = 0, high=img.shape[1], size=(self.redetect_samples))
-                # print("[DEBUG] using random sampling method in function redetect_target() because no method was specified")
-
-            # make sure the samples are within the image
-            x = np.clip(x, 0, img.shape[0])
-            y = np.clip(y, 0, img.shape[1])
-
-            # join the x and y coordinates into a single array of positions [[y1,x1],[y2,x2],...]
-            new_positions = np.stack((x,y), axis=1)
-            # print(f"[DEBUG] Redetecting with new positions: {new_positions}")
-            # print(f"[DEBUG] Redetecting with new positions (shape): {new_positions.shape}")
-
-            # adapt code from scale to positions: 
-
-            # crop and resize patches for each position
-            x = [ops.crop_and_resize(
-            img, position, self.x_sz ,
-            out_size=self.cfg.instance_sz,
-            border_value=self.avg_color) for position in new_positions]
-            x = np.stack(x, axis=0)
-            x = torch.from_numpy(x).to(
-                self.device).permute(0, 3, 1, 2).float()
-            
-            # calculate responses for new positions
-            x = self.net.backbone(x)
-            responses = self.net.head(self.kernel, x)
-            responses = responses.squeeze(1).cpu().numpy()
-
-            # peak position id
-            position_id = np.argmax(np.amax(responses, axis=(1, 2)))
-
-            # peak location
-            response = responses[position_id]
-
-            # update the center of the target to the new most likely location
-            self.center = new_positions[position_id]
-
-            # locate target center (adapted from scale to position)
-            disp_in_response = np.array(loc) - (self.upscale_sz - 1) / 2
-            disp_in_instance = disp_in_response * self.cfg.total_stride / self.cfg.response_up
-            disp_in_image = disp_in_instance * self.x_sz / self.cfg.instance_sz
-            self.center += disp_in_image
-
-            # return 1-indexed and left-top based bounding box
-            box = np.array([
-                self.center[1] + 1 - (self.target_sz[1] - 1) / 2,
-                self.center[0] + 1 - (self.target_sz[0] - 1) / 2,
-                self.target_sz[1], self.target_sz[0]])
-            
-            # detect if the target is found
-            max_resp = max(0, response.max()) # calcualte the new max response for tresholding
-
-            if max_resp / self.max_response_avg > self.not_detected_threshold:
-                print(f"[DEBUG] Target found in {self.redetect_iterations} iterations at position {self.center}")
-                self.redetect = False
-                self.redetect_iterations = 0 # reset the redetect iterations
-
-                return box, max_resp
-            else:
-                # continu redetecting in next frame if target is not found in this frame
-                print("[DEBUG] Target not found")
-                # print the position of the target
-                print(f"[DEBUG] Target position estimate: {self.center}")
-                self.redetect_iterations += 1
-                return box, 0
-
-    @torch.no_grad()
     def update(self, img):
         # set to evaluation mode
         self.net.eval()
@@ -286,30 +189,7 @@ class TrackerSiamFC(Tracker):
         response = (1 - self.cfg.window_influence) * response + \
             self.cfg.window_influence * self.hann_window
         loc = np.unravel_index(response.argmax(), response.shape)
-        
-        # --------------------------------- REDETECTION CHECK AND RUN ---------------------------------
-        # HERE IS WHERE MY CHANGES START 
 
-        #calcualte the max avrage response for tresholding 
-        avg_response = max_resp * self.alpha_avg_max_resp + ( 1 - self.alpha_avg_max_resp) * self.max_response_avg
-
-        #if the avg_response falls below a certain treshold we most likley lost the target and need to start redetection
-        if max_resp / avg_response < self.not_detected_threshold and not self.redetect:
-            #redetect the target
-            print("[DEBUG] Target not detected, redetecting")
-            self.redetect = True
-        
-        # REDETECTION
-        if self.redetect == True:
-            print("[DEBUG] Redetecting, last known position: ", self.last_known_position)
-            return self.redetect_target(img, loc)
-        
-        # --------------------------------- END OF REDETECTION CHECK AND RUN ---------------------------------
-
-        # --------------------------------- NORMAL TRACKING ---------------------------------
-        # if we are "normal tracking" updated the max response avg
-        self.max_response_avg = avg_response
- 
         # locate target center
         disp_in_response = np.array(loc) - (self.upscale_sz - 1) / 2
         disp_in_instance = disp_in_response * \
@@ -317,9 +197,6 @@ class TrackerSiamFC(Tracker):
         disp_in_image = disp_in_instance * self.x_sz * \
             self.scale_factors[scale_id] / self.cfg.instance_sz
         self.center += disp_in_image
-
-        #update the last known position of the target
-        self.last_known_position = self.center.copy()
 
         # update target size
         scale =  (1 - self.cfg.scale_lr) * 1.0 + \
@@ -335,7 +212,6 @@ class TrackerSiamFC(Tracker):
             self.target_sz[1], self.target_sz[0]])
 
         return box, max_resp
-    # HERE MY CHANGE ENDS
     
     def train_step(self, batch, backward=True):
         # set network mode

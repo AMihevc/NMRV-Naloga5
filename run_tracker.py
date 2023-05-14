@@ -5,7 +5,7 @@ import cv2
 from tools.sequence_utils import VOTSequence
 from tools.sequence_utils import save_results
 from siamfc import TrackerSiamFC
-
+import time
 
 def evaluate_tracker(dataset_path, network_path, results_dir, visualize):
     
@@ -66,5 +66,8 @@ parser.add_argument("--results_dir", help="Path to the directory to store the re
 parser.add_argument("--visualize", help="Show ground-truth annotations", required=False, action='store_true')
 
 args = parser.parse_args()
+start_time = time.time()
 
 evaluate_tracker(args.dataset, args.net, args.results_dir, args.visualize)
+
+print('Total time elapsed: %.3f seconds.' % (time.time() - start_time))

@@ -2,10 +2,21 @@ conda install pytorch torchvision cudatoolkit=9.0 −c pytorch
 pip install opencv
 pip install got10k
 
-To run the short term tracker use: 
+To run the tracker use: 
 
 python run_tracker.py --dataset dataset-lt --net siamfc_net.pth --results_dir results
 
-To evaluate the short term tracker: 
+To evaluate the tracker: 
 
 python performance_evaluation.py --dataset dataset-lt --results_dir results
+
+To visualize results use: 
+
+python show_tracking.py --dataset dataset-lt --results_dir results --sequence car9
+
+run the long-term tracker:
+python run_tracker.py --dataset dataset-lt --net siamfc_net.pth --results_dir results-lt
+
+python performance_evaluation.py --dataset dataset-lt --results_dir results-lt
+
+python show_tracking.py --dataset dataset-lt --results_dir results-lt --sequence car9
